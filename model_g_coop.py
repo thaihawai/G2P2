@@ -34,13 +34,15 @@ class TextEncoder(nn.Module):
 
 
 class PromptLearner(nn.Module):
-    def __init__(self, args, classnames, clip_model, g_texts):
+    def __init__(self, args, classnames, clip_model, g_texts, device):
         super().__init__()
         self.vars = nn.ParameterList()
         n_cls = len(classnames)
         n_ctx = args.coop_n_ctx
         dtype = clip_model.dtype
         ctx_dim = clip_model.ln_final.weight.shape[0]
+
+        self.device = device
 
         # random initialization
         if args.ctx_init:
@@ -59,7 +61,7 @@ class PromptLearner(nn.Module):
                 temp = []
                 for ctx_list in g_texts:
                     temp += ctx_list
-                prompt = model.tokenize(temp, context_length=args.context_length)
+                prompt = model.tokenize(temp, context_length=args.context_length).to(self.device)
                 with torch.no_grad():
                     embedding = clip_model.token_embedding(prompt).type(dtype)
                 ctx_vector = embedding[:, 1: 1 + n_ctx, :]
@@ -86,7 +88,7 @@ class PromptLearner(nn.Module):
         prompts = [prompt_prefix + " " + name + "." for name in classnames]
 
         tokenized_prompts = torch.cat(
-            [model.tokenize(p, context_length=args.context_length) for p in prompts])
+            [model.tokenize(p, context_length=args.context_length) for p in prompts]).to(self.device)
         with torch.no_grad():
             embedding = clip_model.token_embedding(tokenized_prompts).type(dtype)
 
@@ -173,9 +175,9 @@ class PromptLearner(nn.Module):
 
 
 class CustomCLIP(nn.Module):
-    def __init__(self, args, classnames, clip_model, g_texts):
+    def __init__(self, args, classnames, clip_model, g_texts, device='cpu'):
         super().__init__()
-        self.prompt_learner = PromptLearner(args, classnames, clip_model, g_texts)
+        self.prompt_learner = PromptLearner(args, classnames, clip_model, g_texts, device)
         self.tokenized_prompts = self.prompt_learner.tokenized_prompts
         self.image_encoder = clip_model.gnn
         self.text_encoder = TextEncoder(clip_model)
@@ -208,7 +210,7 @@ class CoOp(nn.Module):
         super().__init__()
         self.args = args
         self.classnames = classnames
-        self.model = CustomCLIP(args, classnames, clip_model, g_texts)
+        self.model = CustomCLIP(args, classnames, clip_model, g_texts, device)
 
         # print("Turning off gradients in both the image and the text encoder")
         for name, param in self.model.named_parameters():
@@ -222,7 +224,7 @@ class CoOp(nn.Module):
         self.optim = optim.Adam(self.model.prompt_learner.parameters(), lr=args.prompt_lr)
 
     def forward(self, s_n, x, adj, label, training=True):
-
+        
         logits = self.model(s_n, x, adj)
         if training:
             loss = F.cross_entropy(logits, label)
