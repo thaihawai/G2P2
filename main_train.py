@@ -8,10 +8,13 @@ from random import sample
 import random
 import math
 import time
+from tqdm import tqdm
 from model import CLIP, tokenize
 from data import DataHelper
 from sklearn import preprocessing
 
+FType = torch.FloatTensor
+LType = torch.LongTensor
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -30,9 +33,12 @@ def main(args):
     Data = DataHelper(arr_edge_index, args)
     model.train()
 
-    for j in range(args.epoch_num):
+    # s_n and t_n stands for start node and end node
+    # node_f is 128-dim data taken from word2vec
+    # tokenize function is tokenize through BPE - a kind of preprocessing for transformer, model.text_embedding is using language model
+    for j in tqdm(range(args.epoch_num)):
         loader = DataLoader(Data, batch_size=args.batch_size, shuffle=True, num_workers=10)
-        for i_batch, sample_batched in enumerate(loader):
+        for i_batch, sample_batched in tqdm(enumerate(loader)):
             s_n, t_n = sample_batched['s_n'], sample_batched['t_n']
             s_n_arr, t_n_arr = s_n.numpy(), t_n.numpy().reshape(-1)  # .reshape((1, -1))
             s_n_text, t_n_text = np.array(tit_list)[s_n_arr].tolist(), np.array(tit_list)[t_n_arr].tolist()
@@ -48,7 +54,8 @@ def main(args):
         # break
         print('{}th epoch loss:{}'.format(j, loss))
 
-    torch.save(model.state_dict(), './res/{}/node_ttgt_8&12_0.1.pkl'.format(args.data_name))
+    # torch.save(model.state_dict(), './res/{}/node_ttgt_8&12_0.1.pkl'.format(args.data_name))
+    torch.save(model.state_dict(), './res/{}/node_ttgt_8&12_0.1_parallel.pkl'.format(args.data_name))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -72,11 +79,16 @@ if __name__ == '__main__':
     parser.add_argument('--transformer_width', type=int, default=512)
     parser.add_argument('--vocab_size', type=int, default=49408)  # 49408
     parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--cpu', type=int, default=0)
     parser.add_argument('--data_name', type=str, default='cora')
 
     args = parser.parse_args()
 
-    device = torch.device("cuda:{}".format(args.gpu) if torch.cuda.is_available() else "cpu")
+    if args.cpu:
+        device = torch.device("cpu")
+    else:
+        device = torch.device("cuda:{}".format(args.gpu) if torch.cuda.is_available() else "cpu")
+    print(f'batch size: {args.batch_size}')
     print('device:', device)
 
     num_nodes = 0
@@ -100,6 +112,7 @@ if __name__ == '__main__':
 
     print('num of edges', len(raw_edge_index[0] + raw_edge_index[1]))
 
+    # this is an edge, Since the model is undirected we must add both ends 
     edge_index = [raw_edge_index[0] + raw_edge_index[1], raw_edge_index[1] + raw_edge_index[0]]
     arr_edge_index = np.array(edge_index)
     edge_index = np.array(edge_index)
@@ -108,6 +121,8 @@ if __name__ == '__main__':
     node_f = np.load('./data/node_f.npy')
     node_f = preprocessing.StandardScaler().fit_transform(node_f)
     node_f = torch.from_numpy(node_f).to(device)
+    print(node_f[0].shape)
+    raise()
 
     start = time.perf_counter()
 

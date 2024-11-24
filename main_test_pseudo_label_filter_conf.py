@@ -58,7 +58,6 @@ def sample_from_classes(index_list, class_list, num_samples, seed):
 
     # The sampling process is ordered by classes, so shuffle once more so that the data loader does not have to
     sampled_data = sampled_data.sample(frac=1, random_state=seed).reset_index(drop=True)
-    sampled_data.to_csv('sample_pseudo.csv', index=False)
 
     # Convert the sampled data back to lists
     sampled_indices = sampled_data["Index"].tolist()
@@ -110,20 +109,29 @@ def pred_unlabeled_nodes(args, model):
     syn_class /= syn_class.norm(dim=-1, keepdim=True)
     node_feas /= node_feas.norm(dim=-1, keepdim=True)
     similarity = (100.0 * node_feas @ syn_class.T).softmax(dim=-1)
+    
     max_logits, max_indices = similarity.max(dim=-1)
-    pred = similarity.argmax(dim=-1)
-    pred = pred.cpu().numpy().reshape(-1)
-    sample_indices, sample_classes = sample_from_classes(unlabeled_ids, pred, args.num_sample, seed)
+    mask = max_logits > args.conf
+    filtered_pred = max_indices[mask]
+
+    filtered_unlabeled_ids = np.array(unlabeled_ids)[mask.cpu().numpy()]
+    pred = filtered_pred.cpu().numpy().reshape(-1)
+
+    # pred = similarity.argmax(dim=-1)
+    # pred = pred.cpu().numpy().reshape(-1)
+    
+    # sample_indices, sample_classes = sample_from_classes(unlabeled_ids, pred, 200, seed)
+    sample_indices, sample_classes = sample_from_classes(filtered_unlabeled_ids, pred, args.num_sample, seed)
     return sample_indices, sample_classes
 
 
 def main(args):
     setup_seed(seed)
 
-    os.makedirs('./res/{}_pseudo'.format(data_name), exist_ok=True)
+    os.makedirs('./res/{}_pseudo_conf'.format(data_name), exist_ok=True)
 
     clip_model = CLIP(args)
-    # clip_model.load_state_dict(torch.load('./res/{}_pseudo/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
+    # clip_model.load_state_dict(torch.load('./res/{}_pseudo_conf/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
     clip_model.load_state_dict(torch.load('./model/node_ttgt_8&12_0.1.pkl', map_location=device))
     clip_model.to(device)
 
@@ -141,7 +149,6 @@ def main(args):
     for j in range(len(task_list)):
         # get only classes in the split
         filtered_idx, filtered_classes = filter_by_classes(pseudo_idx, pseudo_classes, task_list[j], labels)
-        # filtered_idx, filtered_classes = filter_by_classes(pseudo_idx, pseudo_classes, labels, labels)
 
         # train_idx_ts = torch.from_numpy(np.array(train_idx[j])).to(device)
         train_idx_ts = torch.from_numpy(np.array(filtered_idx)).to(device)
@@ -173,7 +180,6 @@ def main(args):
         Data = DataHelperPseudo(arr_edge_index, args, filtered_idx, filtered_classes)
         loader = DataLoader(Data, batch_size=args.batch_size, shuffle=False, num_workers=0)
         # since the classes and nodes are pretty random have to put them into a dictionary
-        # TODO: investigate result all the same no matter how many sample are used - I think it has to do with context length
         temp = {}
         for i_batch, sample_batched in enumerate(loader):
             s_n = sample_batched['s_n'].numpy()
@@ -216,11 +222,11 @@ def main(args):
                         break
                 else:
                     best_val = val_acc
-                    torch.save(model, './res/{}_pseudo/g_coop.pkl'.format(data_name))
+                    torch.save(model, './res/{}_pseudo_conf/g_coop.pkl'.format(data_name))
                     counter = 0
         # print('{}th_task_best_val'.format(j), round(best_val, 4))
 
-        best_model = torch.load('./res/{}_pseudo/g_coop.pkl'.format(data_name))
+        best_model = torch.load('./res/{}_pseudo_conf/g_coop.pkl'.format(data_name))
         best_model.eval()
         with torch.no_grad():
             res = model.forward(test_idx_ts, node_f, edge_index, test_truth_ts, training=False)
@@ -274,6 +280,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--num_sample', type=int, default=200)
+    parser.add_argument('--conf', type=float, default=0.9)
 
     args = parser.parse_args()
 

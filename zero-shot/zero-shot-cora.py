@@ -1,3 +1,5 @@
+import sys
+sys.path.insert(0, './')
 import numpy as np
 import argparse
 import torch
@@ -32,10 +34,17 @@ def main(args):
     setup_seed(seed)
 
     model = CLIP(args)
-    model.load_state_dict(torch.load('./res/{}/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
+    # model.load_state_dict(torch.load('./res/{}/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
+    model.load_state_dict(torch.load('./model/node_ttgt_8&12_0.1.pkl', map_location=device))
+    model.to(device)
 
-    task_list, train_idx, val_idx, test_idx = multitask_data_generator(lab_list, labeled_ids, labels, args.k_spt,
-                                                                       args.k_val, args.k_qry, args.n_way)
+    # task_list, train_idx, val_idx, test_idx = multitask_data_generator(lab_list, labeled_ids, labels, args.k_spt,
+    #                                                                    args.k_val, args.k_qry, args.n_way)
+    
+    checkpoint_org = torch.load('./splits/cora_org_data_seed{}'.format(seed))  
+    task_list, train_idx, val_idx, test_idx = checkpoint_org['task_list'], checkpoint_org['train_idx'],\
+                                                checkpoint_org['val_idx'], checkpoint_org['test_idx'] 
+
     all_acc = []
     f1_list = []
     for j in range(len(task_list)):
@@ -55,11 +64,15 @@ def main(args):
         with torch.no_grad():
             syn_class = model.encode_text(test_labels)
 
-        Data = DataHelper(test_idx[j])
+        Data = DataHelper(arr_edge_index, args, test_idx[j])
         loader = DataLoader(Data, batch_size=args.batch_size, shuffle=False, num_workers=0)
+        # model encode image return GNN features so node feas is only GNN
+        # THIS is the bottleneck, you can run model.encode_text on prompt but not model.encode_image
+        # For few-shot however, the training nodes are still in the graph so maybe?
         node_feas = []
         for i_batch, sample_batched in enumerate(loader):
-            idx_train = sample_batched['node_idx'].to(device)
+            # idx_train = sample_batched['node_idx'].to(device)
+            idx_train = sample_batched['s_n'].to(device)
             with torch.no_grad():
                 node_fea = model.encode_image(idx_train, node_f, edge_index)
                 node_feas.append(node_fea)
@@ -120,6 +133,8 @@ if __name__ == '__main__':
     parser.add_argument('--vocab_size', type=int, default=49408)
     parser.add_argument('--gpu', type=int, default=0)
 
+    parser.add_argument('--seed', type=int, default=1)
+
     args = parser.parse_args()
 
     data_name = 'cora'
@@ -179,8 +194,10 @@ if __name__ == '__main__':
                 'research paper of ', 'a research paper of ']
 
 
-    the_template = the_list[0]
-    seed = 1
+    # the_template = the_list[0]
+    the_template = the_list[1]
+    # seed = 1
+    seed = args.seed
     print('seed', seed)
     main(args)
     end = time.perf_counter()

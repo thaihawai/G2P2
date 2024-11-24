@@ -33,6 +33,7 @@ def multitask_data_generator(labels, labeled_node_list, select_array, k_spt, k_v
     for i in range(len(select_array)):
         if i not in set(usable_labels):
             continue
+        # select k_spt = 5 sample for each class for train and val
         train_class_list[i] = np.random.choice(class_idx_list[i], k_spt, replace=False).tolist()
         val_class_temp = [n1 for n1 in class_idx_list[i] if n1 not in train_class_list[i]]
         val_class_list[i] = np.random.choice(val_class_temp, k_val, replace=False).tolist()

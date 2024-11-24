@@ -209,6 +209,9 @@ class CLIP(nn.Module):
 
         s_text_features = self.encode_text(s_n_text)
 
+        # getting summary of nodes - mean of features of end nodes
+        # since data loader works batch by batch, not all neighbors of a node is included
+        # there is an argument on the number of neighbor just to be safe - but shouldnt we shuffle the list?
         t_text_features = self.encode_text(t_n_text)
         t_text_features = t_text_features.reshape(s_image_features.shape[0], self.args.neigh_num, self.args.gnn_output)
         t_text_features = torch.mean(t_text_features, dim=1, keepdim=False)
@@ -220,17 +223,20 @@ class CLIP(nn.Module):
 
         labels = torch.arange(s_image_features.shape[0]).to(device)
 
+        # GNN vs transformer
         logit_scale = self.logit_scale.exp()  # the temporature hyperparameter
         logits = logit_scale * s_image_features @ s_text_features.t()
         loss_i = F.cross_entropy(logits, labels)
         loss_t = F.cross_entropy(logits.T, labels)
         node_loss = (loss_i + loss_t) / 2
 
+        # GNN vs summary
         logits = logit_scale * s_image_features @ t_text_features.t()
         loss_i = F.cross_entropy(logits, labels)
         loss_t = F.cross_entropy(logits.T, labels)
         gt_loss = (loss_i + loss_t)/2
 
+        # summary vs transformer
         logits = logit_scale * s_text_features @ t_text_features.t()
         loss_i = F.cross_entropy(logits, labels)
         loss_t = F.cross_entropy(logits.T, labels)

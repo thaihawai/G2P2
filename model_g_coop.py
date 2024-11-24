@@ -50,7 +50,7 @@ class PromptLearner(nn.Module):
             if args.class_specific:
                 ctx_vectors = []
                 for ctx_list in g_texts:
-                    prompt = model.tokenize(ctx_list, context_length=args.context_length)
+                    prompt = model.tokenize(ctx_list, context_length=args.context_length).to(self.device)
                     with torch.no_grad():
                         embedding = clip_model.token_embedding(prompt).type(dtype)
                     ctx_vector = embedding[:, 1: 1 + n_ctx, :]

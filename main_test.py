@@ -33,10 +33,17 @@ def main(args):
     setup_seed(seed)
 
     clip_model = CLIP(args)
-    clip_model.load_state_dict(torch.load('./res/{}/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
+    # clip_model.load_state_dict(torch.load('./res/{}/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
+    clip_model.load_state_dict(torch.load('./model/node_ttgt_8&12_0.1.pkl', map_location=device))
+    clip_model.to(device)
 
-    task_list, train_idx, val_idx, test_idx = multitask_data_generator(lab_list, labeled_ids, labels, args.k_spt,
-                                                                       args.k_val, args.k_qry, args.n_way)
+    # task_list, train_idx, val_idx, test_idx = multitask_data_generator(lab_list, labeled_ids, labels, args.k_spt,
+    #                                                                    args.k_val, args.k_qry, args.n_way)
+
+    checkpoint_org = torch.load('./splits/cora_org_data_seed{}'.format(seed))  
+    task_list, train_idx, val_idx, test_idx = checkpoint_org['task_list'], checkpoint_org['train_idx'],\
+                                                checkpoint_org['val_idx'], checkpoint_org['test_idx']  
+
     all_acc = []
     f1_list = []
     for j in range(len(task_list)):
@@ -55,7 +62,7 @@ def main(args):
             task_labels_dict[task_lables_arr[i]] = i
 
         train_truth_ts = [task_labels_dict[train_truth[i]] for i in range(len(train_truth))]
-        train_truth_ts = torch.from_numpy(np.array(train_truth_ts)).to(device)
+        train_truth_ts = torch.from_numpy(np.array(train_truth_ts, dtype=np.int64)).to(device)
 
         val_truth_ts = [task_labels_dict[val_truth[i]] for i in range(len(val_truth))]
         val_truth_ts = torch.from_numpy(np.array(val_truth_ts)).to(device)
@@ -66,14 +73,17 @@ def main(args):
         task_lables = task_lables_arr.tolist()
         Data = DataHelper(arr_edge_index, args, train_idx[j])
         loader = DataLoader(Data, batch_size=args.batch_size, shuffle=False, num_workers=0)
+        # alright this code is only correct because we take 5 samples with batch size = 32 -> get all samples
+        temp = []
         for i_batch, sample_batched in enumerate(loader):
             s_n = sample_batched['s_n'].numpy()
             t_n = sample_batched['t_n'].numpy()
-        s_n = s_n.reshape(args.num_labels, args.k_spt)
-        t_n = t_n.reshape(args.num_labels, args.k_spt * args.neigh_num)
-        temp = []
-        for i in range(args.num_labels):
-            temp.append(np.concatenate((s_n[i], t_n[i])))
+            s_n = s_n.reshape(args.num_labels, args.k_spt)
+            t_n = t_n.reshape(args.num_labels, args.k_spt * args.neigh_num)
+        
+            for i in range(args.num_labels):
+                temp.append(np.concatenate((s_n[i], t_n[i])))
+        # g_texts is the raw text of training nodes
         g_texts = []
         for i in range(len(temp)):
             g_text = [tit_list[a] for a in temp[i]]
@@ -156,6 +166,8 @@ if __name__ == '__main__':
     parser.add_argument('--vocab_size', type=int, default=49408)
     parser.add_argument('--gpu', type=int, default=0)
 
+    parser.add_argument('--seed', type=int, default=1)
+
     args = parser.parse_args()
 
     data_name = 'cora'
@@ -216,7 +228,8 @@ if __name__ == '__main__':
     all_acc_list = []
     all_macf1_list = []
 
-    seed = 1
+    # seed = 1
+    seed = args.seed
     print('seed', seed)
     main(args)
     end = time.perf_counter()
