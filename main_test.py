@@ -6,6 +6,7 @@ from random import sample
 import random
 import math
 import time
+from tqdm import tqdm
 from model import CLIP, tokenize
 from torch import nn, optim
 from sklearn import preprocessing
@@ -95,7 +96,7 @@ def main(args):
         patience = 10
         counter = 0
 
-        for epoch in range(1, args.ft_epoch + 1):
+        for epoch in tqdm(range(1, args.ft_epoch + 1)):
             # print('----epoch:' + str(epoch))
             model.train()
             train_logits = model.forward(train_idx_ts, node_f, edge_index, train_truth_ts)

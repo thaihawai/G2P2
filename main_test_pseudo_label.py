@@ -10,6 +10,7 @@ import time
 from tqdm import tqdm
 from model import CLIP, tokenize
 from torch import nn, optim
+import torch.nn.functional as F
 from sklearn import preprocessing
 from sklearn.metrics import accuracy_score, f1_score
 # from multitask_2 import multitask_data_generator
@@ -87,10 +88,12 @@ def filter_by_classes(indices, classes, desired_classes, labels):
 def pred_unlabeled_nodes(args, model):
     setup_seed(seed)
 
+    # creating pseudo label using task labels
     task_prompt = []
     for a in range(len(labels)):
         prompt = the_template + labels[a]
         task_prompt.append(prompt)
+    # extract all text embeddings of task labels
     all_classes_labels = tokenize(task_prompt, context_length=args.context_length).to(device)
     with torch.no_grad():
         syn_class = model.encode_text(all_classes_labels)
@@ -163,7 +166,7 @@ def main(args):
         train_truth_ts = torch.from_numpy(np.array(train_truth_ts, dtype=np.int64)).to(device)
 
         val_truth_ts = [task_labels_dict[val_truth[i]] for i in range(len(val_truth))]
-        val_truth_ts = torch.from_numpy(np.array(val_truth_ts)).to(device)
+        val_truth_ts = torch.from_numpy(np.array(val_truth_ts, dtype=np.int64)).to(device)
 
         test_truth_ts = [task_labels_dict[test_truth[i]] for i in range(len(test_truth))]
         test_truth_ts = torch.from_numpy(np.array(test_truth_ts)).to(device)
@@ -173,7 +176,6 @@ def main(args):
         Data = DataHelperPseudo(arr_edge_index, args, filtered_idx, filtered_classes)
         loader = DataLoader(Data, batch_size=args.batch_size, shuffle=False, num_workers=0)
         # since the classes and nodes are pretty random have to put them into a dictionary
-        # TODO: investigate result all the same no matter how many sample are used - I think it has to do with context length
         temp = {}
         for i_batch, sample_batched in enumerate(loader):
             s_n = sample_batched['s_n'].numpy()
@@ -188,7 +190,6 @@ def main(args):
                 temp[class_id] += t_n_single
 
         # each g_text is the prompt for one class
-        # we have to add in the right order
         g_texts = []
         for class_name in task_lables:
             if class_name in filtered_classes:
@@ -198,18 +199,31 @@ def main(args):
         model = CoOp(args, task_lables, clip_model, g_texts, device)
 
         best_val = 0
-        patience = 10
+        patience = args.patience
         counter = 0
 
+        task_train_loss = []
+        task_train_acc = []
+        task_val_loss = []
+        task_val_acc = []
         for epoch in tqdm(range(1, args.ft_epoch + 1)):
             # print('----epoch:' + str(epoch))
             model.train()
             train_logits = model.forward(train_idx_ts, node_f, edge_index, train_truth_ts)
+            with torch.no_grad():
+                train_loss = F.cross_entropy(train_logits, train_truth_ts)
+                task_train_loss.append(train_loss.item())
+                train_acc = accuracy_score(train_truth_ts.cpu(), train_logits.argmax(dim=1).cpu())
+                task_train_acc.append(train_acc)
+
 
             model.eval()
             with torch.no_grad():
                 res = model.forward(val_idx_ts, node_f, edge_index, val_truth_ts, training=False)
                 val_acc = accuracy_score(val_truth_ts.cpu(), res.argmax(dim=1).cpu())
+                val_loss = F.cross_entropy(res, val_truth_ts)
+                task_val_loss.append(val_loss.item())
+                task_val_acc.append(val_acc)
                 if val_acc <= best_val:
                     counter += 1
                     if counter >= patience:
@@ -218,6 +232,22 @@ def main(args):
                     best_val = val_acc
                     torch.save(model, './res/{}_pseudo/g_coop.pkl'.format(data_name))
                     counter = 0
+        
+        df_loss_dict = {
+            'train_loss': task_train_loss,
+            'val_loss': task_val_loss
+        }
+
+        df_acc_dict = {
+            'train_acc': task_train_acc,
+            'val_acc': task_val_acc
+        }
+
+        # saving loss and accuracy curve for later analysis
+        df_loss = pd.DataFrame.from_dict(df_loss_dict)
+        df_acc = pd.DataFrame.from_dict(df_acc_dict)
+        df_loss.to_csv(f'./loss_acc/task_{j}_loss.csv', index=False)
+        df_acc.to_csv(f'./loss_acc/task_{j}_acc.csv', index=False)
         # print('{}th_task_best_val'.format(j), round(best_val, 4))
 
         best_model = torch.load('./res/{}_pseudo/g_coop.pkl'.format(data_name))
@@ -274,6 +304,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--num_sample', type=int, default=200)
+    parser.add_argument('--patience', type=int, default=10)
 
     args = parser.parse_args()
 

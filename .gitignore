@@ -4,4 +4,11 @@
 # pycache and env
 **env**
 **pycache**
-**res**
+res**
+loss_acc**
+
+# data and model
+**csv**
+**pkl**
+**.npy**
+splits**

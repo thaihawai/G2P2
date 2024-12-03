@@ -10,6 +10,7 @@ import time
 from tqdm import tqdm
 from model import CLIP, tokenize
 from torch import nn, optim
+import torch.nn.functional as F
 from sklearn import preprocessing
 from sklearn.metrics import accuracy_score, f1_score
 # from multitask_2 import multitask_data_generator
@@ -58,6 +59,7 @@ def sample_from_classes(index_list, class_list, num_samples, seed):
 
     # The sampling process is ordered by classes, so shuffle once more so that the data loader does not have to
     sampled_data = sampled_data.sample(frac=1, random_state=seed).reset_index(drop=True)
+    # sampled_data.to_csv('sample_pseudo.csv', index=False)
 
     # Convert the sampled data back to lists
     sampled_indices = sampled_data["Index"].tolist()
@@ -83,16 +85,16 @@ def filter_by_classes(indices, classes, desired_classes, labels):
     filtered_classes = [labels[cls] for cls in classes if cls in desired_classes]
     return filtered_indices, filtered_classes
 
-def pred_unlabeled_nodes(args, model):
+def pred_unlabeled_nodes(args, model, task_set):
     setup_seed(seed)
 
     task_prompt = []
-    for a in range(len(labels)):
+    for a in task_set:
         prompt = the_template + labels[a]
         task_prompt.append(prompt)
-    all_classes_labels = tokenize(task_prompt, context_length=args.context_length).to(device)
+    task_set_labels = tokenize(task_prompt, context_length=args.context_length).to(device)
     with torch.no_grad():
-        syn_class = model.encode_text(all_classes_labels)
+        syn_class = model.encode_text(task_set_labels)
 
     Data = DataHelper(arr_edge_index, args, unlabeled_ids)
     loader = DataLoader(Data, batch_size=args.batch_size, shuffle=False, num_workers=0)
@@ -109,19 +111,20 @@ def pred_unlabeled_nodes(args, model):
     syn_class /= syn_class.norm(dim=-1, keepdim=True)
     node_feas /= node_feas.norm(dim=-1, keepdim=True)
     similarity = (100.0 * node_feas @ syn_class.T).softmax(dim=-1)
-    
+
     max_logits, max_indices = similarity.max(dim=-1)
-    # filter by confidence score
     mask = max_logits > args.conf
     filtered_pred = max_indices[mask]
 
     filtered_unlabeled_ids = np.array(unlabeled_ids)[mask.cpu().numpy()]
-    pred = filtered_pred.cpu().numpy().reshape(-1)
 
+    pred = filtered_pred.cpu().numpy().reshape(-1)
     # pred = similarity.argmax(dim=-1)
     # pred = pred.cpu().numpy().reshape(-1)
+
+    pred = [task_set[i] for i in pred]
     
-    # sample_indices, sample_classes = sample_from_classes(unlabeled_ids, pred, 200, seed)
+    # sample_indices, sample_classes = sample_from_classes(unlabeled_ids, pred, args.num_sample, seed)
     sample_indices, sample_classes = sample_from_classes(filtered_unlabeled_ids, pred, args.num_sample, seed)
     return sample_indices, sample_classes
 
@@ -129,14 +132,14 @@ def pred_unlabeled_nodes(args, model):
 def main(args):
     setup_seed(seed)
 
-    os.makedirs('./res/{}_pseudo_conf'.format(data_name), exist_ok=True)
+    os.makedirs('./res/{}_pseudo_conf_task_split'.format(data_name), exist_ok=True)
+    os.makedirs(f'./loss_acc/pseudo_conf_task_split/{args.prompt_lr}_{args.batch_size}_{args.num_sample}_{args.conf}/seed_{seed}/', exist_ok=True)
 
     clip_model = CLIP(args)
-    # clip_model.load_state_dict(torch.load('./res/{}_pseudo_conf/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
+    # clip_model.load_state_dict(torch.load('./res/{}_pseudo_conf_task_split/node_ttgt_8&12_0.1.pkl'.format(data_name), map_location=device))
     clip_model.load_state_dict(torch.load('./model/node_ttgt_8&12_0.1.pkl', map_location=device))
     clip_model.to(device)
 
-    pseudo_idx, pseudo_classes = pred_unlabeled_nodes(args, clip_model)
 
     # task_list, train_idx, val_idx, test_idx = multitask_data_generator(lab_list, labeled_ids, labels, args.k_spt,
     #                                                                    args.k_val, args.k_qry, args.n_way)
@@ -148,8 +151,11 @@ def main(args):
     all_acc = []
     f1_list = []
     for j in range(len(task_list)):
+        # get pseudo label using only the labels in the task list
+        pseudo_idx, pseudo_classes = pred_unlabeled_nodes(args, clip_model, task_list[j])
         # get only classes in the split
         filtered_idx, filtered_classes = filter_by_classes(pseudo_idx, pseudo_classes, task_list[j], labels)
+        # filtered_idx, filtered_classes = filter_by_classes(pseudo_idx, pseudo_classes, labels, labels)
 
         # train_idx_ts = torch.from_numpy(np.array(train_idx[j])).to(device)
         train_idx_ts = torch.from_numpy(np.array(filtered_idx)).to(device)
@@ -171,7 +177,7 @@ def main(args):
         train_truth_ts = torch.from_numpy(np.array(train_truth_ts, dtype=np.int64)).to(device)
 
         val_truth_ts = [task_labels_dict[val_truth[i]] for i in range(len(val_truth))]
-        val_truth_ts = torch.from_numpy(np.array(val_truth_ts)).to(device)
+        val_truth_ts = torch.from_numpy(np.array(val_truth_ts, dtype=np.int64)).to(device)
 
         test_truth_ts = [task_labels_dict[test_truth[i]] for i in range(len(test_truth))]
         test_truth_ts = torch.from_numpy(np.array(test_truth_ts)).to(device)
@@ -205,29 +211,57 @@ def main(args):
         model = CoOp(args, task_lables, clip_model, g_texts, device)
 
         best_val = 0
-        patience = 10
+        patience = args.patience
         counter = 0
 
+        task_train_loss = []
+        task_train_acc = []
+        task_val_loss = []
+        task_val_acc = []
         for epoch in tqdm(range(1, args.ft_epoch + 1)):
             # print('----epoch:' + str(epoch))
             model.train()
             train_logits = model.forward(train_idx_ts, node_f, edge_index, train_truth_ts)
+            with torch.no_grad():
+                train_loss = F.cross_entropy(train_logits, train_truth_ts)
+                task_train_loss.append(train_loss.item())
+                train_acc = accuracy_score(train_truth_ts.cpu(), train_logits.argmax(dim=1).cpu())
+                task_train_acc.append(train_acc)
+
 
             model.eval()
             with torch.no_grad():
                 res = model.forward(val_idx_ts, node_f, edge_index, val_truth_ts, training=False)
                 val_acc = accuracy_score(val_truth_ts.cpu(), res.argmax(dim=1).cpu())
+                val_loss = F.cross_entropy(res, val_truth_ts)
+                task_val_loss.append(val_loss.item())
+                task_val_acc.append(val_acc)
                 if val_acc <= best_val:
                     counter += 1
                     if counter >= patience:
                         break
                 else:
                     best_val = val_acc
-                    torch.save(model, './res/{}_pseudo_conf/g_coop.pkl'.format(data_name))
+                    torch.save(model, './res/{}_pseudo_conf_task_split/g_coop_conf_{}.pkl'.format(data_name, args.conf))
                     counter = 0
+        
+        df_loss_dict = {
+            'train_loss': task_train_loss,
+            'val_loss': task_val_loss
+        }
+
+        df_acc_dict = {
+            'train_acc': task_train_acc,
+            'val_acc': task_val_acc
+        }
+
+        df_loss = pd.DataFrame.from_dict(df_loss_dict)
+        df_acc = pd.DataFrame.from_dict(df_acc_dict)
+        df_loss.to_csv(f'./loss_acc/pseudo_conf_task_split/{args.prompt_lr}_{args.batch_size}_{args.num_sample}_{args.conf}/seed_{seed}/task_{j}_loss.csv', index=False)
+        df_acc.to_csv(f'./loss_acc/pseudo_conf_task_split/{args.prompt_lr}_{args.batch_size}_{args.num_sample}_{args.conf}/seed_{seed}/task_{j}_acc.csv', index=False)
         # print('{}th_task_best_val'.format(j), round(best_val, 4))
 
-        best_model = torch.load('./res/{}_pseudo_conf/g_coop.pkl'.format(data_name))
+        best_model = torch.load('./res/{}_pseudo_conf_task_split/g_coop_conf_{}.pkl'.format(data_name, args.conf))
         best_model.eval()
         with torch.no_grad():
             res = model.forward(test_idx_ts, node_f, edge_index, test_truth_ts, training=False)
@@ -281,6 +315,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--num_sample', type=int, default=200)
+    parser.add_argument('--patience', type=int, default=10)
     parser.add_argument('--conf', type=float, default=0.9)
 
     args = parser.parse_args()
